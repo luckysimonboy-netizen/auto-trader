@@ -1,5 +1,5 @@
 # ⚡ 币安全自动量化交易引擎 · 实时交割日报
-> **执行时间**：`2026-10-24 09:47 UTC` ｜ **通道状态**：`实盘连接受限: binanceus {"code":-2015,"msg":"Invalid API-key, IP, or permi` ｜ **策略模式**：`RSI 动量量化策略`
+> **执行时间**：`2026-10-24 09:49 UTC` ｜ **通道状态**：`实盘连接受限: binanceus {"code":-2015,"msg":"Invalid API-key, IP, or permi` ｜ **策略模式**：`RSI 动量量化策略`
 
 ## 一、 账户资产水位
 * **可用 USDT 现金**：`$0.0 USDT`
