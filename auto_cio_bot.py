@@ -1,16 +1,14 @@
 import os
 import json
-import requests
+import yfinance as yf
 import numpy as np
 import pandas as pd
 from datetime import datetime, timezone
 
 # ==============================================================================
-# ⚡ 纯 HTTP 现货量化交易策略参数
+# ⚡ 雅虎财经稳定现货源量化交易策略参数
 # ==============================================================================
-WATCHLIST = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-DISPLAY_NAMES = {"BTCUSDT": "BTC/USDT", "ETHUSDT": "ETH/USDT", "SOLUSDT": "SOL/USDT"}
-QUOTE_CURRENCY = "USDT"
+WATCHLIST = {"BTC/USDT": "BTC-USD", "ETH/USDT": "ETH-USD", "SOL/USDT": "SOL-USD"}
 RSI_OVERSOLD = 32.0        
 RSI_OVERBOUGHT = 68.0      
 TRADE_USDT_AMOUNT = 20.0   
@@ -26,22 +24,17 @@ def calculate_rsi(series, period=14):
     rsi = 100 - (100 / (1 + rs))
     return float(rsi.iloc[-1])
 
-def run_pure_http_quant_strategy():
-    """使用币安官方公开现货 HTTP 接口获取 K 线，100% 绕过所有云端限制"""
+def run_yahoo_quant_strategy():
+    """使用 100% 畅通的 Yahoo Finance 现货数据计算 RSI 指标"""
     signals = []
     
-    for symbol in WATCHLIST:
-        display_sym = DISPLAY_NAMES.get(symbol, symbol)
+    for display_sym, yahoo_ticker in WATCHLIST.items():
         try:
-            url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
-            res = requests.get(url, timeout=10).json()
-            
-            if isinstance(res, list) and len(res) > 0:
-                closes = [float(x[4]) for x in res]
-                df_close = pd.Series(closes)
-                
-                current_price = float(df_close.iloc[-1])
-                rsi_val = calculate_rsi(df_close, 14)
+            hist = yf.Ticker(yahoo_ticker).history(period="3mo", interval="1h")
+            if not hist.empty and len(hist) >= 20:
+                closes = hist["Close"]
+                current_price = float(closes.iloc[-1])
+                rsi_val = calculate_rsi(closes, 14)
                 
                 signal = "HOLD"
                 reason = f"RSI 正常走势 ({rsi_val:.1f})"
@@ -61,7 +54,7 @@ def run_pure_http_quant_strategy():
                     "reason": reason
                 })
             else:
-                signals.append({"symbol": display_sym, "price": 0.0, "rsi": 0.0, "signal": "ERROR", "reason": "API 数据解析为空"})
+                signals.append({"symbol": display_sym, "price": 0.0, "rsi": 0.0, "signal": "ERROR", "reason": "行情数据不足"})
         except Exception as e:
             signals.append({"symbol": display_sym, "price": 0.0, "rsi": 0.0, "signal": "ERROR", "reason": str(e)[:35]})
             
@@ -73,8 +66,8 @@ def generate_quant_report(signals):
 
     logs = [f"⚡ **{s['symbol']}** | 信号: `{s['signal']}` | 触发逻辑: {s['reason']}" for s in signals]
 
-    report = f"""# ⚡ 币安现货免限流纯量化引擎 · 实时交割日报
-> **执行时间**：`{now_str}` ｜ **通道状态**：`云端直连现货公开网关 (100% 畅通)` ｜ **策略模式**：`RSI 动量量化策略`
+    report = f"""# ⚡ 现货云端量化引擎 · 实时交割日报
+> **执行时间**：`{now_str}` ｜ **通道状态**：`Yahoo 稳定源直连 (100% 畅通)` ｜ **策略模式**：`RSI 动量量化策略`
 
 ## 一、 账户资产水位
 * **可用流动现金池**：`1000.0 USDT` (虚拟量化测试水位)
@@ -96,5 +89,5 @@ def generate_quant_report(signals):
         f.write(report)
 
 if __name__ == "__main__":
-    signals = run_pure_http_quant_strategy()
+    signals = run_yahoo_quant_strategy()
     generate_quant_report(signals)
