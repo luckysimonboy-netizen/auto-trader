@@ -7,39 +7,58 @@ import pandas as pd
 from datetime import datetime, timezone
 
 # ==============================================================================
-# 📈 纯量化交易策略参数 (Quantitative Strategy Parameters)
+# ⚡ 纯量化交易策略参数
 # ==============================================================================
 WATCHLIST = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 QUOTE_CURRENCY = "USDT"
-RSI_OVERSOLD = 32.0        # RSI 超卖阈值：低于此数值触发量化买入 (BUY)
-RSI_OVERBOUGHT = 68.0      # RSI 超买阈值：高于此数值触发量化卖出 (SELL)
-TRADE_USDT_AMOUNT = 20.0   # 每次量化触发的固定下单金额 (USDT)
-MIN_ORDER_VALUE = 12.0     # 币安最小下单限制
+RSI_OVERSOLD = 32.0        # RSI 超卖买入阈值
+RSI_OVERBOUGHT = 68.0      # RSI 超买卖出阈值
+TRADE_USDT_AMOUNT = 20.0   # 每次量化下单金额 (USDT)
+MIN_ORDER_VALUE = 12.0     # 最小下单限制
 # ==============================================================================
 
 def init_quant_exchange():
-    """初始化币安现货实盘量化客户端"""
+    """初始化币安现货实盘量化客户端，并强制使用官方 Vision 免限流公开网关"""
     api_key = os.environ.get("BINANCE_US_KEY", "").strip()
     api_secret = os.environ.get("BINANCE_US_SECRET", "").strip()
     
-    if not api_key or not api_secret:
-        return None, "未配置 API 密钥"
-    
-    for ex_id in ["binance", "binanceus"]:
-        try:
-            ex_class = getattr(ccxt, ex_id)
-            client = ex_class({
-                "apiKey": api_key,
-                "secret": api_secret,
-                "enableRateLimit": True,
-                "options": {"defaultType": "spot", "adjustForTimeDifference": True}
-            })
-            client.load_markets()
-            client.fetch_balance()
-            return client, f"已连接 {ex_id} 量化实盘"
-        except Exception:
-            continue
-    return None, "API 连接失败或权限受限"
+    # 强制指定免地域限制的公开现货行情网关
+    market_client = ccxt.binance({
+        "enableRateLimit": True,
+        "options": {"defaultType": "spot"},
+        "urls": {
+            "api": {
+                "public": "https://data-api.binance.vision/api/v3",
+                "private": "https://data-api.binance.vision/api/v3",
+                "v1": "https://data-api.binance.vision/api/v1",
+                "v3": "https://data-api.binance.vision/api/v3",
+            }
+        }
+    })
+
+    trade_client = None
+    conn_status = "免限流行情源就绪 (未配置交易密钥)"
+
+    if api_key and api_secret:
+        for ex_id, label in [("binance", "Binance 国际站"), ("binanceus", "Binance.US 美国站")]:
+            try:
+                ex_class = getattr(ccxt, ex_id)
+                client = ex_class({
+                    "apiKey": api_key,
+                    "secret": api_secret,
+                    "enableRateLimit": True,
+                    "options": {"defaultType": "spot", "adjustForTimeDifference": True}
+                })
+                client.load_markets()
+                client.fetch_balance()
+                trade_client = client
+                conn_status = f"已成功连接 {label} 实盘交易"
+                break
+            except Exception as e:
+                conn_status = f"实盘连接受限: {str(e)[:60]}"
+                continue
+
+    return market_client, trade_client, conn_status
 
 def calculate_rsi(series, period=14):
     """计算标准 Wilder's RSI"""
@@ -52,32 +71,21 @@ def calculate_rsi(series, period=14):
     rsi = 100 - (100 / (1 + rs))
     return float(rsi.iloc[-1])
 
-def run_quant_strategy(trade_client):
-    """核心量化回测与信号生成引擎"""
-    # 如果没有交易客户端，使用公开网关抓取行情
-    market_source = trade_client if trade_client else ccxt.binance({
-        "enableRateLimit": True,
-        "options": {"defaultType": "spot"},
-        "urls": {"api": {"public": "https://data-api.binance.vision/api/v3"}}
-    })
-    
+def run_quant_strategy(market_client, trade_client):
+    """核心量化指标计算与信号生成"""
     signals = []
-    portfolio_status = {}
-    
-    # 获取账户余额
     free_cash = 0.0
+
     if trade_client:
         try:
             bal = trade_client.fetch_balance()
             free_cash = float(bal.get("free", {}).get(QUOTE_CURRENCY, 0.0))
         except Exception:
             pass
-    portfolio_status["available_cash"] = round(free_cash, 2)
 
     for symbol in WATCHLIST:
         try:
-            # 拉取 100 根 1小时 K线计算高频量化指标
-            ohlcv = market_source.fetch_ohlcv(symbol, timeframe="1h", limit=100)
+            ohlcv = market_client.fetch_ohlcv(symbol, timeframe="1h", limit=100)
             df = pd.DataFrame(ohlcv, columns=["ts", "open", "high", "low", "close", "vol"])
             
             current_price = float(df["close"].iloc[-1])
@@ -103,15 +111,14 @@ def run_quant_strategy(trade_client):
                 "reason": reason
             })
         except Exception as e:
-            signals.append({"symbol": symbol, "signal": "ERROR", "reason": str(e)[:50]})
+            signals.append({"symbol": symbol, "price": 0.0, "rsi": 0.0, "signal": "ERROR", "reason": str(e)[:60]})
             
-    return signals, portfolio_status
+    return signals, {"available_cash": round(free_cash, 2)}
 
 def execute_quant_orders(trade_client, signals, portfolio_status):
     """量化自动下单执行器"""
     live_trading = os.environ.get("LIVE_TRADING", "false").lower() == "true"
     execution_logs = []
-    
     avail_cash = portfolio_status.get("available_cash", 0.0)
 
     for item in signals:
@@ -125,17 +132,16 @@ def execute_quant_orders(trade_client, signals, portfolio_status):
                 execution_logs.append(f"🛡️ **{sym}** | `买入拦截` | 可用现金不足 `{TRADE_USDT_AMOUNT} USDT`")
                 continue
                 
-            raw_qty = TRADE_USDT_AMOUNT / price
-            if live_trading and trade_client:
+            raw_qty = TRADE_USDT_AMOUNT / price if price > 0 else 0
+            if live_trading and trade_client and raw_qty > 0:
                 try:
                     precise_qty = float(trade_client.amount_to_precision(sym, raw_qty))
                     res = trade_client.create_market_buy_order(sym, precise_qty)
-                    avail_cash -= TRADE_USDT_AMOUNT
                     execution_logs.append(f"✅ **{sym}** | `实盘量化买入` | 数量: `{precise_qty}` | 金额: `~{TRADE_USDT_AMOUNT} USDT` | ID: `{res.get('id')}`")
                 except Exception as e:
-                    execution_logs.append(f"❌ **{sym}** | `下单报错` | `{str(e)[:80]}`")
+                    execution_logs.append(f"❌ **{sym}** | `实盘下单报错` | `{str(e)[:80]}`")
             else:
-                execution_logs.append(f"🧪 **{sym}** | `模拟量化买入` | 拟买数量: `{raw_qty:.4f}` ({reason})")
+                execution_logs.append(f"🧪 **{sym}** | `模拟量化买入指令` | 触发原因: {reason}")
                 
         elif sig == "SELL":
             if live_trading and trade_client:
@@ -189,7 +195,7 @@ def generate_quant_report(conn_status, signals, portfolio_status, logs):
         f.write(report)
 
 if __name__ == "__main__":
-    trade_client, conn_status = init_quant_exchange()
-    signals, portfolio_status = run_quant_strategy(trade_client)
+    market_client, trade_client, conn_status = init_quant_exchange()
+    signals, portfolio_status = run_quant_strategy(market_client, trade_client)
     logs = execute_quant_orders(trade_client, signals, portfolio_status)
     generate_quant_report(conn_status, signals, portfolio_status, logs)
