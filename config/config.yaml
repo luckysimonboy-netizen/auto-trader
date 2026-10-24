@@ -1,0 +1,46 @@
+# 美股量化系统全局配置
+system:
+  project_name: "US_Quant_System"
+  log_level: "INFO"
+  storage_dir: "storage"
+
+market_rules:
+  timezone: "America/New_York"
+  default_benchmark: "SPY"
+  default_adjust_type: "qfq"         # qfq(前复权), hfq(后复权), none(不复权)
+  
+  # PDT (Pattern Day Trader) 规则校验
+  pdt_rule:
+    enabled: true
+    min_equity_threshold: 25000.0    # 净值低于2.5万美元触发日内限制
+    rolling_window_days: 5
+    max_day_trades: 3                # 5日内最多3次T+0，超限拦截
+    
+  # 美股标普500三级熔断规则
+  circuit_breaker:
+    benchmark_symbol: "SPY"
+    level_1_drop: -0.07              # 跌幅7% (09:30-15:25暂停15分钟)
+    level_2_drop: -0.13              # 跌幅13% (暂停15分钟)
+    level_3_drop: -0.20              # 跌幅20% (全天停止交易)
+    pause_cutoff_time: "15:25"
+    pause_minutes: 15
+
+  # 手续费与滑点
+  commission:
+    mode: "free"                     # free: 免佣收SEC/FINRA规费; per_share: 按股计费
+    sec_fee_rate: 0.0000278
+    finra_taf_per_share: 0.000166
+  slippage:
+    model: "dynamic_vol"             # 动态波动率滑点
+    pct_rate: 0.0005
+
+data_module:
+  primary_source: "yfinance"
+  storage_type: "sqlite"
+  sqlite_db_name: "market_data.db"
+  parquet_auto_switch_rows: 50000    # 大数据自动切Parquet
+
+universe:
+  sample_pool: ["AAPL", "NVDA", "TSLA", "MSFT", "SPY", "QQQ"]
+  blacklist: ["LUCKQ", "BBBYQ", "SIVBQ"] # 破产/粉单黑名单
+  min_daily_turnover: 5000000        # 最低日成交额500万美元过滤
