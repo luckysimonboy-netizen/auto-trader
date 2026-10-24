@@ -24,26 +24,47 @@ MIN_ORDER_VALUE_USDT = 12.0      # 低于 12 USDT 的碎单自动拦截，满足
 
 def init_smart_exchange():
     """
-    智能双路由引擎：自动兼容 binance.com (国际站) 与 binance.us (美国站)
-    并配置免地域限制的官方公开行情网关 data-api.binance.vision
+    机构级智能双路由：强制指定免地域限制的官方 Vision 公开行情网关，
+    完美绕过 GitHub 云端服务器的 IP 地区合规限制。
     """
     api_key = os.environ.get("BINANCE_US_KEY", "").strip()
     api_secret = os.environ.get("BINANCE_US_SECRET", "").strip()
 
-    # 优先建立公开行情客户端（使用官方 vision 网关，全球云端节点 100% 畅通）
+    # 强制指定全球免限制公开行情网关
     market_client = ccxt.binance({
         "enableRateLimit": True,
         "options": {"defaultType": "spot"},
         "urls": {
             "api": {
                 "public": "https://data-api.binance.vision/api/v3",
-                "sapi": "https://data-api.binance.vision/api/v3",
+                "private": "https://data-api.binance.vision/api/v3",
+                "v1": "https://data-api.binance.vision/api/v1",
+                "v3": "https://data-api.binance.vision/api/v3",
             }
         }
     })
 
     if not api_key or not api_secret:
         return market_client, None, "未检测到 API 密钥 (仅运行行情分析)"
+
+    # 尝试连接交易客户端
+    for ex_id, label in [("binance", "Binance 国际站"), ("binanceus", "Binance.US 美国站")]:
+        try:
+            ex_class = getattr(ccxt, ex_id)
+            trade_client = ex_class({
+                "apiKey": api_key,
+                "secret": api_secret,
+                "enableRateLimit": True,
+                "options": {"defaultType": "spot", "adjustForTimeDifference": True}
+            })
+            trade_client.load_markets()
+            return market_client, trade_client, f"已成功认证连接: {label}"
+        except Exception as e:
+            last_err = str(e)
+            continue
+
+    return market_client, None, f"账户连接受限 (将执行模拟分析): {last_err[:120]}"
+
 
     # 自动探测用户的密钥属于 binance.com 还是 binance.us
     for ex_id, label in [("binance", "Binance.com 国际站"), ("binanceus", "Binance.US 美国站")]:
