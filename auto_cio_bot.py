@@ -7,7 +7,7 @@ import pandas as pd
 from datetime import datetime, timezone
 
 # ==============================================================================
-# ⚡ 纯量化交易策略参数
+# ⚡ 币安国际站 (Binance.com) 纯量化交易策略参数
 # ==============================================================================
 WATCHLIST = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 QUOTE_CURRENCY = "USDT"
@@ -18,11 +18,11 @@ MIN_ORDER_VALUE = 12.0
 # ==============================================================================
 
 def init_quant_exchange():
-    """强制使用币安官方 Vision 现货公开网关，绝不请求合约接口"""
+    """强制锁定币安国际站 (Binance.com) 与官方 Vision 免限流现货公开网关"""
     api_key = os.environ.get("BINANCE_US_KEY", "").strip()
     api_secret = os.environ.get("BINANCE_US_SECRET", "").strip()
     
-    # 纯现货公开行情客户端
+    # 纯现货公开行情客户端（使用 Vision 网关，彻底绕过地域限制）
     market_client = ccxt.binance({
         "enableRateLimit": True,
         "options": {"defaultType": "spot"},
@@ -38,23 +38,20 @@ def init_quant_exchange():
     conn_status = "免限流行情源就绪 (未配置交易密钥)"
 
     if api_key and api_secret:
-        for ex_id, label in [("binanceus", "Binance.US"), ("binance", "Binance.com")]:
-            try:
-                ex_class = getattr(ccxt, ex_id)
-                client = ex_class({
-                    "apiKey": api_key,
-                    "secret": api_secret,
-                    "enableRateLimit": True,
-                    "options": {"defaultType": "spot", "adjustForTimeDifference": True}
-                })
-                client.load_markets()
-                client.fetch_balance()
-                trade_client = client
-                conn_status = f"已成功连接 {label} 实盘交易"
-                break
-            except Exception as e:
-                conn_status = f"密钥校验失败(-2015): 检查 API Key 或 Secret 是否复制完整"
-                continue
+        try:
+            # 明确指定 binance 国际站
+            client = ccxt.binance({
+                "apiKey": api_key,
+                "secret": api_secret,
+                "enableRateLimit": True,
+                "options": {"defaultType": "spot", "adjustForTimeDifference": True}
+            })
+            client.load_markets()
+            client.fetch_balance()
+            trade_client = client
+            conn_status = "已成功连接 Binance.com 国际站实盘交易"
+        except Exception as e:
+            conn_status = f"国际站密钥校验受限: {str(e)[:60]}"
 
     return market_client, trade_client, conn_status
 
@@ -130,7 +127,7 @@ def execute_quant_orders(trade_client, signals, portfolio_status):
                 try:
                     precise_qty = float(trade_client.amount_to_precision(sym, raw_qty))
                     res = trade_client.create_market_buy_order(sym, precise_qty)
-                    execution_logs.append(f"✅ **{sym}** | `实盘量化买入` | 数量: `{precise_qty}` | ID: `{res.get('id')}`")
+                    execution_logs.append(f"✅ **{sym}** | `国际站实盘量化买入` | 数量: `{precise_qty}` | ID: `{res.get('id')}`")
                 except Exception as e:
                     execution_logs.append(f"❌ **{sym}** | `下单报错` | `{str(e)[:60]}`")
             else:
@@ -144,7 +141,7 @@ def generate_quant_report(conn_status, signals, portfolio_status, logs):
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     signal_table = "\n".join([f"| **{s['symbol']}** | `${s.get('price', 0)}` | `{s.get('rsi', 'N/A')}` | `{s['signal']}` | {s['reason']} |" for s in signals])
 
-    report = f"""# ⚡ 币安全自动量化交易引擎 · 实时交割日报
+    report = f"""# ⚡ 币安国际站 (Binance.com) 量化交易引擎 · 实时交割日报
 > **执行时间**：`{now_str}` ｜ **通道状态**：`{conn_status}` ｜ **策略模式**：`RSI 动量量化策略`
 
 ## 一、 账户资产水位
