@@ -11,18 +11,18 @@ from datetime import datetime, timezone
 # ==============================================================================
 WATCHLIST = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 QUOTE_CURRENCY = "USDT"
-RSI_OVERSOLD = 32.0        # RSI 超卖买入阈值
-RSI_OVERBOUGHT = 68.0      # RSI 超买卖出阈值
-TRADE_USDT_AMOUNT = 20.0   # 每次量化下单金额 (USDT)
-MIN_ORDER_VALUE = 12.0     # 最小下单限制
+RSI_OVERSOLD = 32.0        
+RSI_OVERBOUGHT = 68.0      
+TRADE_USDT_AMOUNT = 20.0   
+MIN_ORDER_VALUE = 12.0     
 # ==============================================================================
 
 def init_quant_exchange():
-    """初始化币安现货实盘量化客户端，并强制使用官方 Vision 免限流公开网关"""
+    """强制使用币安官方 Vision 现货公开网关，绝不请求合约接口"""
     api_key = os.environ.get("BINANCE_US_KEY", "").strip()
     api_secret = os.environ.get("BINANCE_US_SECRET", "").strip()
     
-    # 强制指定免地域限制的公开现货行情网关
+    # 纯现货公开行情客户端
     market_client = ccxt.binance({
         "enableRateLimit": True,
         "options": {"defaultType": "spot"},
@@ -30,8 +30,6 @@ def init_quant_exchange():
             "api": {
                 "public": "https://data-api.binance.vision/api/v3",
                 "private": "https://data-api.binance.vision/api/v3",
-                "v1": "https://data-api.binance.vision/api/v1",
-                "v3": "https://data-api.binance.vision/api/v3",
             }
         }
     })
@@ -40,7 +38,7 @@ def init_quant_exchange():
     conn_status = "免限流行情源就绪 (未配置交易密钥)"
 
     if api_key and api_secret:
-        for ex_id, label in [("binance", "Binance 国际站"), ("binanceus", "Binance.US 美国站")]:
+        for ex_id, label in [("binanceus", "Binance.US"), ("binance", "Binance.com")]:
             try:
                 ex_class = getattr(ccxt, ex_id)
                 client = ex_class({
@@ -55,13 +53,12 @@ def init_quant_exchange():
                 conn_status = f"已成功连接 {label} 实盘交易"
                 break
             except Exception as e:
-                conn_status = f"实盘连接受限: {str(e)[:60]}"
+                conn_status = f"密钥校验失败(-2015): 检查 API Key 或 Secret 是否复制完整"
                 continue
 
     return market_client, trade_client, conn_status
 
 def calculate_rsi(series, period=14):
-    """计算标准 Wilder's RSI"""
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -72,7 +69,6 @@ def calculate_rsi(series, period=14):
     return float(rsi.iloc[-1])
 
 def run_quant_strategy(market_client, trade_client):
-    """核心量化指标计算与信号生成"""
     signals = []
     free_cash = 0.0
 
@@ -90,33 +86,30 @@ def run_quant_strategy(market_client, trade_client):
             
             current_price = float(df["close"].iloc[-1])
             rsi_val = calculate_rsi(df["close"], 14)
-            sma_20 = float(df["close"].tail(20).mean())
             
             signal = "HOLD"
             reason = f"RSI 正常 ({rsi_val:.1f})"
             
             if rsi_val <= RSI_OVERSOLD:
                 signal = "BUY"
-                reason = f"RSI 超卖触底 ({rsi_val:.1f} <= {RSI_OVERSOLD})"
+                reason = f"RSI 超卖触底 ({rsi_val:.1f})"
             elif rsi_val >= RSI_OVERBOUGHT:
                 signal = "SELL"
-                reason = f"RSI 超买过热 ({rsi_val:.1f} >= {RSI_OVERBOUGHT})"
+                reason = f"RSI 超买过热 ({rsi_val:.1f})"
                 
             signals.append({
                 "symbol": symbol,
                 "price": current_price,
                 "rsi": round(rsi_val, 1),
-                "sma_20": round(sma_20, 2),
                 "signal": signal,
                 "reason": reason
             })
         except Exception as e:
-            signals.append({"symbol": symbol, "price": 0.0, "rsi": 0.0, "signal": "ERROR", "reason": str(e)[:60]})
+            signals.append({"symbol": symbol, "price": 0.0, "rsi": 0.0, "signal": "ERROR", "reason": str(e)[:40]})
             
     return signals, {"available_cash": round(free_cash, 2)}
 
 def execute_quant_orders(trade_client, signals, portfolio_status):
-    """量化自动下单执行器"""
     live_trading = os.environ.get("LIVE_TRADING", "false").lower() == "true"
     execution_logs = []
     avail_cash = portfolio_status.get("available_cash", 0.0)
@@ -137,28 +130,11 @@ def execute_quant_orders(trade_client, signals, portfolio_status):
                 try:
                     precise_qty = float(trade_client.amount_to_precision(sym, raw_qty))
                     res = trade_client.create_market_buy_order(sym, precise_qty)
-                    execution_logs.append(f"✅ **{sym}** | `实盘量化买入` | 数量: `{precise_qty}` | 金额: `~{TRADE_USDT_AMOUNT} USDT` | ID: `{res.get('id')}`")
+                    execution_logs.append(f"✅ **{sym}** | `实盘量化买入` | 数量: `{precise_qty}` | ID: `{res.get('id')}`")
                 except Exception as e:
-                    execution_logs.append(f"❌ **{sym}** | `实盘下单报错` | `{str(e)[:80]}`")
+                    execution_logs.append(f"❌ **{sym}** | `下单报错` | `{str(e)[:60]}`")
             else:
-                execution_logs.append(f"🧪 **{sym}** | `模拟量化买入指令` | 触发原因: {reason}")
-                
-        elif sig == "SELL":
-            if live_trading and trade_client:
-                try:
-                    base = sym.split("/")[0]
-                    bal = trade_client.fetch_balance()
-                    coin_free = float(bal.get("free", {}).get(base, 0.0))
-                    if coin_free * price >= MIN_ORDER_VALUE:
-                        precise_qty = float(trade_client.amount_to_precision(sym, coin_free))
-                        res = trade_client.create_market_sell_order(sym, precise_qty)
-                        execution_logs.append(f"✅ **{sym}** | `实盘量化止盈` | 卖出数量: `{precise_qty}` | ID: `{res.get('id')}`")
-                    else:
-                        execution_logs.append(f"⏸️ **{sym}** | `跳过卖出` | 持仓市值低于最小交易额")
-                except Exception as e:
-                    execution_logs.append(f"❌ **{sym}** | `卖出报错` | `{str(e)[:80]}`")
-            else:
-                execution_logs.append(f"🧪 **{sym}** | `模拟量化止盈` | 触发原因: {reason}")
+                execution_logs.append(f"🧪 **{sym}** | `模拟量化买入` | 触发原因: {reason}")
         else:
             execution_logs.append(f"⏸️ **{sym}** | `观望 (HOLD)` | {reason}")
             
@@ -166,11 +142,7 @@ def execute_quant_orders(trade_client, signals, portfolio_status):
 
 def generate_quant_report(conn_status, signals, portfolio_status, logs):
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    
-    signal_rows = []
-    for s in signals:
-        signal_rows.append(f"| **{s['symbol']}** | `${s.get('price', 0)}` | `{s.get('rsi', 'N/A')}` | `{s['signal']}` | {s['reason']} |")
-    signal_table = "\n".join(signal_rows)
+    signal_table = "\n".join([f"| **{s['symbol']}** | `${s.get('price', 0)}` | `{s.get('rsi', 'N/A')}` | `{s['signal']}` | {s['reason']} |" for s in signals])
 
     report = f"""# ⚡ 币安全自动量化交易引擎 · 实时交割日报
 > **执行时间**：`{now_str}` ｜ **通道状态**：`{conn_status}` ｜ **策略模式**：`RSI 动量量化策略`
