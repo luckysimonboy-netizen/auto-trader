@@ -1,0 +1,43 @@
+name: Institutional Value Crypto CIO
+
+on:
+  workflow_dispatch: # 支持随时在网页上手动点击立即运行
+  schedule:
+    - cron: '0 1,13 * * *' # 每天北京时间 09:00 与 21:00 自动唤醒巡航
+
+permissions:
+  contents: write
+
+jobs:
+  run-autonomous-cio:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 检出私有仓库代码
+        uses: actions/checkout@v4
+
+      - name: 2. 初始化机构级 Python 3.11 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 3. 安装量化与大模型依赖库
+        run: pip install -r requirements.txt
+
+      - name: 4. 唤醒巴芒段 AI 投委会并执行操盘
+        env:
+          BINANCE_US_KEY: ${{ secrets.BINANCE_US_KEY }}
+          BINANCE_US_SECRET: ${{ secrets.BINANCE_US_SECRET }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_MODEL: 'deepseek-chat'
+          LIVE_TRADING: 'true'
+        run: python auto_cio_bot.py
+
+      - name: 5. 自动将今日交割日报写回仓库首页
+        run: |
+          git config --global user.name "AI-Family-Office-CIO"
+          git config --global user.email "cio@github.actions"
+          git add LATEST_CIO_MEMO.md
+          git diff --staged --quiet || git commit -m "report: update autonomous CIO execution memo"
+          git push
